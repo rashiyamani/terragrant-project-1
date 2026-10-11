@@ -35,3 +35,10 @@ pnpm-debug.log*
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# OpenTofu / Terragrunt
+.terragrunt-cache/
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log

@@ -35,6 +35,28 @@ resource "aws_s3_bucket_versioning" "this" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+  bucket = aws_s3_bucket.this.id
+
+  # Versioning is on, so expire old versions and clean up failed uploads
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.this]
+}
+
 # CloudFront Origin Access Control (OAC) for secure S3 access
 resource "aws_cloudfront_origin_access_control" "this" {
   name                              = "${var.bucket_name}-oac"
