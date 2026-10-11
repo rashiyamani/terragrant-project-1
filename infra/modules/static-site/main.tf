@@ -77,6 +77,16 @@ resource "aws_s3_bucket_policy" "cloudfront_oac" {
   })
 }
 
+# AWS managed policies, looked up by name rather than hardcoded IDs
+data "aws_cloudfront_cache_policy" "optimized" {
+  name = "Managed-CachingOptimized"
+}
+
+# HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, etc.
+data "aws_cloudfront_response_headers_policy" "security_headers" {
+  name = "Managed-SecurityHeadersPolicy"
+}
+
 resource "aws_cloudfront_distribution" "this" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -95,11 +105,9 @@ resource "aws_cloudfront_distribution" "this" {
     target_origin_id       = "S3-${var.bucket_name}"
     viewer_protocol_policy = "redirect-to-https"
 
-    compress = true
-    # AWS managed: CachingOptimized
-    cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
-    # AWS managed: SecurityHeadersPolicy (HSTS, X-Content-Type-Options, X-Frame-Options, etc.)
-    response_headers_policy_id = "67f7725c-6f97-4210-82d7-5512b698d1ae"
+    compress                   = true
+    cache_policy_id            = data.aws_cloudfront_cache_policy.optimized.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
   }
 
   # SPA Routing: Redirect 404/403 to index.html for React Router
