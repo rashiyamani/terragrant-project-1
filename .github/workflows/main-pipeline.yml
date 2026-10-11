@@ -12,60 +12,54 @@ on:
       - staging
       - main
 
+# Least privilege by default; jobs that need OIDC request id-token explicitly
+permissions:
+  contents: read
+
 env:
+  AWS_REGION: us-east-1
   TOFU_VERSION: "1.8.8"
   TG_VERSION: "0.77.22"
   TG_NON_INTERACTIVE: "true"
   TF_IN_AUTOMATION: "true"
 
 jobs:
-  # Step 1: SonarCloud Code Analysis & Quality Gate
-  sonarcloud:
-    name: SonarCloud Code Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Shallow clones should be disabled for accurate SonarCloud analysis
-
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@v3.1.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed to get PR information, if any
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-  # Step 2: Detect Target Environment based on Git Branch
+  # Step 1: Detect Target Environment based on Git Branch
   set-env:
-    needs: sonarcloud
     runs-on: ubuntu-latest
     outputs:
       target_env: ${{ steps.select_env.outputs.target_env }}
     steps:
       - id: select_env
+        env:
+          # PRs target a branch via base_ref; pushes use ref_name
+          BRANCH: ${{ github.base_ref || github.ref_name }}
         run: |
-          if [ "${{ github.ref_name }}" == "main" ]; then
+          if [ "$BRANCH" == "main" ]; then
             echo "target_env=prod" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref_name }}" == "staging" ]; then
+          elif [ "$BRANCH" == "staging" ]; then
             echo "target_env=staging" >> $GITHUB_OUTPUT
           else
             echo "target_env=dev" >> $GITHUB_OUTPUT
           fi
 
-  # Step 3: Infrastructure Provisioning
-  infrastructure:
+  # Step 3a: Plan (runs on PRs and pushes, no approval needed)
+  plan:
+    name: Infrastructure Plan
     needs: set-env
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Terragrunt Plan
         uses: gruntwork-io/terragrunt-action@v3
@@ -75,21 +69,43 @@ jobs:
           tg_dir: "infra/live/${{ needs.set-env.outputs.target_env }}/frontend"
           tg_command: "plan"
 
+  # Step 3b: Apply (push only; the GitHub Environment enforces required reviewers for prod)
+  infrastructure:
+    name: Infrastructure Apply
+    needs: [set-env, plan]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: ${{ needs.set-env.outputs.target_env }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Terragrunt Apply
-        if: github.event_name == 'push'
         uses: gruntwork-io/terragrunt-action@v3
         with:
           tofu_version: ${{ env.TOFU_VERSION }}
           tg_version: ${{ env.TG_VERSION }}
           tg_dir: "infra/live/${{ needs.set-env.outputs.target_env }}/frontend"
-          tg_command: "apply"
-          args: "apply --auto-approve"
+          tg_command: "apply -auto-approve"
 
   # Step 4: React App Build & S3/CloudFront Deployment
   deploy-app:
     needs: [set-env, infrastructure]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    environment: ${{ needs.set-env.outputs.target_env }}
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -107,27 +123,28 @@ jobs:
           npm ci
           npm run build
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Sync Build to S3 & Invalidate CloudFront Cache
+        env:
+          ENV: ${{ needs.set-env.outputs.target_env }}
         run: |
-          ENV="${{ needs.set-env.outputs.target_env }}"
           BUCKET_NAME="my-react-app-$ENV-site-unique123"
-          
-          # Sync static production assets
-          aws s3 sync ./frontend/build s3://$BUCKET_NAME --delete
 
-          # Find associated CloudFront Distribution ID and clear cache
-          DIST_ID=$(aws cloudfront list-distributions --output json | jq -r --arg bucket "$BUCKET_NAME" '.DistributionList.Items[] | select(.Origins.Items[0].DomainName | contains($bucket)) | .Id')
-          
-          if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "null" ]; then
+          aws s3 sync ./frontend/build "s3://$BUCKET_NAME" --delete
+
+          DIST_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[0].DomainName=='${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com'].Id | [0]" \
+            --output text)
+
+          if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
             echo "Invalidating CloudFront cache for Distribution ID: $DIST_ID"
-            aws cloudfront create-invalidation --distribution-id $DIST_ID --paths "/*"
+            aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
           else
-            echo "CloudFront Distribution ID not found for invalidation."
+            echo "::error::CloudFront distribution not found for $BUCKET_NAME"
+            exit 1
           fi

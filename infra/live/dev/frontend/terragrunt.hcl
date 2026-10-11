@@ -8,7 +8,7 @@ terraform {
 
 inputs = {
   bucket_name   = "my-react-app-dev-site-unique123"
-  force_destroy = true
+  force_destroy = false
   tags = {
     Environment = "dev"
     ManagedBy   = "OpenTofu-Terragrunt"
