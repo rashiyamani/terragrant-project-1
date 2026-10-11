@@ -148,7 +148,12 @@ jobs:
         env:
           ENV: ${{ needs.set-env.outputs.target_env }}
         run: |
-          BUCKET_NAME="my-react-app-$ENV-site-unique123"
+          # Single source of truth: the bucket name in the env's terragrunt.hcl
+          BUCKET_NAME=$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "infra/live/$ENV/frontend/terragrunt.hcl")
+          if [ -z "$BUCKET_NAME" ]; then
+            echo "::error::bucket_name not found for $ENV"
+            exit 1
+          fi
 
           aws s3 sync ./frontend/build "s3://$BUCKET_NAME" --delete
 
