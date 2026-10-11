@@ -7,7 +7,7 @@ terraform {
 }
 
 inputs = {
-  bucket_name   = "my-react-app-prod-site-unique123"
+  bucket_name   = "my-react-app-prod-site-unique1234"
   force_destroy = false
   tags = {
     Environment = "prod"
