@@ -18,6 +18,8 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  # Role ARNs are not secret. Hardcoded to rule out a stale AWS_ROLE_ARN secret.
+  AWS_ROLE_ARN: arn:aws:iam::074002960123:role/github-actions-react-deploy
   TOFU_VERSION: "1.8.8"
   TG_VERSION: "0.77.22"
   TG_NON_INTERACTIVE: "true"
@@ -63,12 +65,15 @@ jobs:
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
           echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | { read p; echo "$p$(printf '=%.0s' 1 2 3)" | base64 -d 2>/dev/null; } | jq '{iss, aud, sub}'
           echo "Role ARN secret set: $([ -n "$ROLE_ARN" ] && echo yes || echo NO)"
-          echo "Role ARN account/shape: $(echo "$ROLE_ARN" | sed -E 's/[0-9]{12}/<12digits>/; s/(role\/).*/\1<name>/')"
+          ACCT=$(echo "$ROLE_ARN" | cut -d: -f5)
+          echo "Role account (last 4 digits): ${ACCT: -4}"
+          echo "Role name: ${ROLE_ARN##*/}"
+          echo "Job: ${{ github.job }}  Ref: ${{ github.ref }}  Event: ${{ github.event_name }}"
 
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terragrunt Plan
@@ -96,7 +101,7 @@ jobs:
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terragrunt Apply
@@ -136,7 +141,7 @@ jobs:
       - name: Configure AWS Credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Sync Build to S3 & Invalidate CloudFront Cache
